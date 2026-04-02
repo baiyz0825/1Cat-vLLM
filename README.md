@@ -210,7 +210,7 @@ python -m pip install ./dist-cu128-sm70/vllm-*.whl
 Or install from a GitHub release asset:
 
 ```bash
-python -m pip install "https://github.com/1CatAI/1Cat-vLLM/releases/download/v0.0.2/vllm-0.0.3.dev0+g55573923a.d20260321.cu128-cp312-cp312-linux_x86_64.whl"
+python -m pip install "https://github.com/1CatAI/1Cat-vLLM/releases/download/v0.0.2/vllm-0.0.2.dev0+g55573923a.d20260321.cu128-cp312-cp312-linux_x86_64.whl"
 ```
 
 Notes:
