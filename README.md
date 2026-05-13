@@ -625,6 +625,11 @@ Do not set `VLLM_SM70_ENABLE_DENSE_F16_FASTPATH=1` for this public MTP profile.
 That dense fast path is experimental and should be benchmarked separately from
 the stable serving command.
 
+If decode throughput is much lower than expected, check `/metrics` for the MTP
+acceptance length first. This profile should keep acceptance around 4 on the
+tested coding prompts; falling to about 1.5-2 usually means the MTP CUDA graph
+capture sizes were changed or omitted.
+
 For speed-only experiments without prefix cache or tool calling, use
 `--max-num-seqs 1`, remove `--enable-prefix-caching`,
 `--enable-auto-tool-choice`, and `--tool-call-parser`, and benchmark
