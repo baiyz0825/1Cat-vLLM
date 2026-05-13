@@ -69,10 +69,10 @@ This assumes one of the following is true:
   similar OpenAI API clients
 - DFlash is included as an experimental path for continued validation
 - Public runtime defaults now center on:
-  - `VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100`
-  - `VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1`
+  - `--attention-backend FLASH_ATTN_V100`
   - `--max-model-len 262144`
-  - `--compilation-config '{"cudagraph_mode":"full_and_piecewise","cudagraph_capture_sizes":[1,2,4,8]}'`
+  - explicit low-concurrency serving limits such as `--max-num-seqs` and
+    `--max-num-batched-tokens`
 - V100 `32 GB` reference configs for 4-card systems:
   - `Qwen3.5-27B-AWQ`
   - `Qwen3.6-35B-A3B-AWQ`
@@ -140,24 +140,19 @@ public serving commands below default to 256K context with
 export ONECAT_VLLM_REPO=/path/to/1Cat-vLLM/vllm
 cd /tmp
 
-CUDA_DEVICE_ORDER=PCI_BUS_ID \
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 HF_HUB_OFFLINE=1 \
 TRANSFORMERS_OFFLINE=1 \
-VLLM_USE_V1=1 \
-VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100 \
-VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1 \
 python "$ONECAT_VLLM_REPO/tools/vllm_v100_backend_regression.py" \
   --child \
   --backend FLASH_ATTN_V100 \
-  --model /home/ymzx/models/Qwen3.5-27B-AWQ \
+  --model /path/to/Qwen3.5-27B-AWQ \
   --dtype float16 \
   --kv-cache-dtype auto \
   --max-model-len 12288 \
   --max-num-seqs 8 \
   --max-num-batched-tokens 16384 \
   --gpu-memory-utilization 0.88 \
-  --kv-cache-auto-trim-ratio 1.05 \
   --tensor-parallel-size 4 \
   --prompt-style qwen35-chat \
   --disable-thinking \
@@ -212,13 +207,11 @@ The public launch commands below are written for 4-card V100 32 GB systems.
 - The public commands in this README are text-generation profiles. Vision or
   multimodal workloads should be tuned separately.
 - For Qwen3.5/Qwen3.6 text-only serving on V100 32 GB, the recommended public
-  defaults are:
-  - `--skip-mm-profiling`
+  commands explicitly set only the serving choices that change behavior:
+  - `--attention-backend FLASH_ATTN_V100`
   - `--max-model-len 262144`
-  - `--kv-cache-auto-trim-ratio 1.05`
-  - `VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100`
-  - `VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1`
-  - `--compilation-config '{"cudagraph_mode":"full_and_piecewise","cudagraph_capture_sizes":[1,2,4,8]}'`
+  - `--max-num-seqs` and `--max-num-batched-tokens`
+  - `--enable-prefix-caching` for the MTP + prefix-cache profile
 - `--gpu-memory-utilization` is an upper bound for the model executor. By
   default, 1Cat-vLLM trims the final KV cache allocation to about
   `1.05 * max_model_len * max_num_seqs`, so single-request 256K serving does
@@ -357,12 +350,10 @@ This image is pinned to:
 
 The runtime entrypoint should include these public defaults:
 
-- `--skip-mm-profiling`
+- `FLASH_ATTN_V100` as the V100 attention backend
 - `--max-model-len 262144`
-- `--kv-cache-auto-trim-ratio 1.05`
-- `VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100`
-- `VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1`
-- `--compilation-config '{"cudagraph_mode":"full_and_piecewise","cudagraph_capture_sizes":[1,2,4,8]}'`
+- explicit `max_num_seqs` and `max_num_batched_tokens` limits for the target
+  model
 
 If you want runtime caches to stay on a large disk, add these options to the
 `docker run` commands below:
@@ -384,12 +375,10 @@ docker run --rm \
   -p 8000:8000 \
   -v /path/to/models:/models:ro \
   -e VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100 \
-  -e VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1 \
   -e VLLM_MODEL=/models/Qwen3.5-27B-AWQ \
   -e VLLM_SERVED_MODEL_NAME=Qwen3.5-27B-AWQ \
   -e VLLM_TENSOR_PARALLEL_SIZE=4 \
   -e VLLM_GPU_MEMORY_UTILIZATION=0.88 \
-  -e VLLM_KV_CACHE_AUTO_TRIM_RATIO=1.05 \
   -e VLLM_MAX_MODEL_LEN=262144 \
   -e VLLM_MAX_NUM_SEQS=1 \
   -e VLLM_MAX_NUM_BATCHED_TOKENS=16384 \
@@ -405,12 +394,10 @@ docker run --rm \
   -p 8000:8000 \
   -v /path/to/models:/models:ro \
   -e VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100 \
-  -e VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1 \
   -e VLLM_MODEL=/models/Qwen3.6-35B-A3B-AWQ \
   -e VLLM_SERVED_MODEL_NAME=Qwen3.6-35B-A3B-AWQ \
   -e VLLM_TENSOR_PARALLEL_SIZE=4 \
   -e VLLM_GPU_MEMORY_UTILIZATION=0.88 \
-  -e VLLM_KV_CACHE_AUTO_TRIM_RATIO=1.05 \
   -e VLLM_MAX_MODEL_LEN=262144 \
   -e VLLM_MAX_NUM_SEQS=1 \
   -e VLLM_MAX_NUM_BATCHED_TOKENS=8192 \
@@ -426,12 +413,10 @@ docker run --rm \
   -p 8000:8000 \
   -v /path/to/models:/models:ro \
   -e VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100 \
-  -e VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1 \
   -e VLLM_MODEL=/models/Qwen3.5-122B-A10B-AWQ \
   -e VLLM_SERVED_MODEL_NAME=Qwen3.5-122B-A10B-AWQ \
   -e VLLM_TENSOR_PARALLEL_SIZE=4 \
   -e VLLM_GPU_MEMORY_UTILIZATION=0.88 \
-  -e VLLM_KV_CACHE_AUTO_TRIM_RATIO=1.05 \
   -e VLLM_MAX_MODEL_LEN=262144 \
   -e VLLM_MAX_NUM_SEQS=1 \
   -e VLLM_MAX_NUM_BATCHED_TOKENS=8096 \
@@ -551,7 +536,7 @@ Important wording:
 - Keep `max_num_seqs=1` for the baseline public commands until your workload
   has been profiled locally. The MTP + prefix-cache profile intentionally uses
   `max_num_seqs=4`.
-- On 32 GB V100 with `VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100`, the baseline API
+- On 32 GB V100 with `FLASH_ATTN_V100`, the baseline API
   server default is also capped at `max_num_seqs=1` to avoid upstream's
   high-concurrency default preallocating unnecessary KV cache and
   sampler/CUDAGraph buffers.
@@ -567,40 +552,22 @@ All commands below are written as full runnable commands. When using the
 prebuilt wheels, run them outside the source checkout, for example after
 `cd ~`, so Python loads the installed wheel package and its CUDA extensions.
 
-### Common V100 environment
-
-```bash
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100
-export VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1
-```
+The commands assume the `1Cat-vLLM` wheel is already installed in your active
+Python environment. Use `CUDA_VISIBLE_DEVICES=0,1,2,3` only when you need to
+select a specific four-card V100 set.
 
 ### Qwen3.5-27B-AWQ, TP4, public 4-card default
 
 ```bash
-source /home/ymzx/miniconda3/etc/profile.d/conda.sh
-conda activate 1Cat-vLLM-1.0.0
-
 python -m vllm.entrypoints.openai.api_server \
-  --model /home/ymzx/models/Qwen3.5-27B-AWQ \
+  --model /path/to/Qwen3.5-27B-AWQ \
   --served-model-name Qwen3.5-27B-AWQ \
-  --trust-remote-code \
-  --quantization awq \
-  --dtype float16 \
+  --attention-backend FLASH_ATTN_V100 \
   --tensor-parallel-size 4 \
   --gpu-memory-utilization 0.88 \
-  --kv-cache-auto-trim-ratio 1.05 \
   --max-model-len 262144 \
   --max-num-seqs 1 \
   --max-num-batched-tokens 16384 \
-  --skip-mm-profiling \
-  --mm-processor-cache-gb 0 \
-  --limit-mm-per-prompt '{"image":0,"video":0}' \
-  --generation-config vllm \
-  --reasoning-parser qwen3 \
-  --default-chat-template-kwargs '{"enable_thinking": true}' \
-  --compilation-config '{"cudagraph_mode":"full_and_piecewise","cudagraph_capture_sizes":[1,2,4,8]}' \
   --host 0.0.0.0 \
   --port 8000
 ```
@@ -613,23 +580,11 @@ for repeated prompts, and uses `num_speculative_tokens=4`, which was the stable
 public MTP profile used for Cherry Studio/OpenClaw-style API testing.
 
 ```bash
-source /home/ymzx/miniconda3/etc/profile.d/conda.sh
-conda activate 1Cat-vLLM-1.0.0
-
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-export VLLM_USE_V1=1
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100
-export VLLM_SM70_ENABLE_LM_HEAD_FASTPATH=1
-export VLLM_SM70_ENABLE_DENSE_F16_FASTPATH=1
-
-cd ~
 python -m vllm.entrypoints.openai.api_server \
-  --model /home/ymzx/models/Qwen3.6-27B-AWQ \
-  --served-model-name qwen3.6-27b-awq-mtp \
+  --model /path/to/Qwen3.6-27B-AWQ \
+  --served-model-name Qwen3.6-27B-AWQ \
   --trust-remote-code \
-  --quantization awq \
-  --dtype float16 \
+  --attention-backend FLASH_ATTN_V100 \
   --tensor-parallel-size 4 \
   --gpu-memory-utilization 0.88 \
   --kv-cache-auto-trim-ratio 0.0 \
@@ -641,15 +596,24 @@ python -m vllm.entrypoints.openai.api_server \
   --skip-mm-profiling \
   --mm-processor-cache-gb 0 \
   --limit-mm-per-prompt '{"image":0,"video":0}' \
-  --generation-config vllm \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_coder \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
   --speculative-config '{"method":"mtp","num_speculative_tokens":4}' \
-  --compilation-config '{"cudagraph_mode":"full_and_piecewise","cudagraph_capture_sizes":[1,2,4,8,9,18]}' \
   --host 0.0.0.0 \
   --port 8000
 ```
+
+Do not remove these MTP-profile options unless you are deliberately changing
+runtime behavior:
+
+- `--kv-cache-auto-trim-ratio 0.0` disables 1Cat-vLLM's default KV auto-trim
+  (`1.05`) and leaves more room for retained prefix-cache blocks.
+- `--mamba-cache-mode align` is required for the Qwen3.6 hybrid Mamba path when
+  prefix caching and MTP are used together.
+- `--mm-processor-cache-gb 0`, `--skip-mm-profiling`, and
+  `--limit-mm-per-prompt '{"image":0,"video":0}'` keep this public profile
+  text-only and avoid unnecessary multimodal processor cache/profiling.
 
 For speed-only experiments without prefix cache or tool calling, use
 `--max-num-seqs 1`, remove `--enable-prefix-caching`,
@@ -659,28 +623,15 @@ For speed-only experiments without prefix cache or tool calling, use
 ### Qwen3.6-35B-A3B-AWQ, TP4, public 4-card default
 
 ```bash
-source /home/ymzx/miniconda3/etc/profile.d/conda.sh
-conda activate 1Cat-vLLM-1.0.0
-
 python -m vllm.entrypoints.openai.api_server \
-  --model /home/ymzx/models/Qwen3.6-35B-A3B-AWQ \
+  --model /path/to/Qwen3.6-35B-A3B-AWQ \
   --served-model-name Qwen3.6-35B-A3B-AWQ \
-  --trust-remote-code \
-  --quantization awq \
-  --dtype float16 \
+  --attention-backend FLASH_ATTN_V100 \
   --tensor-parallel-size 4 \
   --gpu-memory-utilization 0.88 \
-  --kv-cache-auto-trim-ratio 1.05 \
   --max-model-len 262144 \
   --max-num-seqs 1 \
   --max-num-batched-tokens 8192 \
-  --skip-mm-profiling \
-  --mm-processor-cache-gb 0 \
-  --limit-mm-per-prompt '{"image":0,"video":0}' \
-  --generation-config vllm \
-  --reasoning-parser qwen3 \
-  --default-chat-template-kwargs '{"enable_thinking": true}' \
-  --compilation-config '{"cudagraph_mode":"full_and_piecewise","cudagraph_capture_sizes":[1,2,4,8]}' \
   --host 0.0.0.0 \
   --port 8000
 ```
@@ -688,28 +639,15 @@ python -m vllm.entrypoints.openai.api_server \
 ### Qwen3.5-122B-A10B-AWQ, TP4, long-context 4-card default
 
 ```bash
-source /home/ymzx/miniconda3/etc/profile.d/conda.sh
-conda activate 1Cat-vLLM-1.0.0
-
 python -m vllm.entrypoints.openai.api_server \
-  --model /home/ymzx/models/Qwen3.5-122B-A10B-AWQ \
+  --model /path/to/Qwen3.5-122B-A10B-AWQ \
   --served-model-name Qwen3.5-122B-A10B-AWQ \
-  --trust-remote-code \
-  --quantization awq \
-  --dtype float16 \
+  --attention-backend FLASH_ATTN_V100 \
   --tensor-parallel-size 4 \
   --gpu-memory-utilization 0.88 \
-  --kv-cache-auto-trim-ratio 1.05 \
   --max-model-len 262144 \
   --max-num-seqs 1 \
   --max-num-batched-tokens 8096 \
-  --skip-mm-profiling \
-  --mm-processor-cache-gb 0 \
-  --limit-mm-per-prompt '{"image":0,"video":0}' \
-  --generation-config vllm \
-  --reasoning-parser qwen3 \
-  --default-chat-template-kwargs '{"enable_thinking": true}' \
-  --compilation-config '{"cudagraph_mode":"full_and_piecewise","cudagraph_capture_sizes":[1,2,4,8]}' \
   --host 0.0.0.0 \
   --port 8000
 ```
