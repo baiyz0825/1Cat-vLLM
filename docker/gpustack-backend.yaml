@@ -1,0 +1,37 @@
+# GPUStack Custom Inference Backend Configuration for 1Cat-vLLM
+#
+# Import this YAML on GPUStack's Inference Backend page:
+#   Resources > Inference Backends > Add Backend > Paste YAML
+#
+# Prerequisites:
+#   1. Build and push the Docker image (or use GitHub Actions to auto-build):
+#        docker build -t ghcr.io/baiyz0825/1Cat-vLLM:1.0.0 -f docker/Dockerfile.1cat .
+#        docker push ghcr.io/baiyz0825/1Cat-vLLM:1.0.0
+#
+# Notes:
+#   - V100 first request warmup takes 1-3 minutes (kernel compilation)
+#   - Custom backends do NOT support distributed inference across multiple workers
+#     in GPUStack; use tensor-parallel-size within a single worker's multi-GPU setup
+
+backend_name: 1cat-vllm-custom
+default_version: "1.0.0"
+version_configs:
+  "1.0.0":
+    image_name: ghcr.io/baiyz0825/1Cat-vLLM:1.0.0
+    custom_framework: cuda
+    entrypoint: vllm serve
+    run_command: >-
+      {{model_path}}
+      --host {{worker_ip}}
+      --port {{port}}
+      --served-model-name {{model_name}}
+      --attention-backend FLASH_ATTN_V100
+      --dtype float16
+      --max-model-len 262144
+      --gpu-memory-utilization 0.88
+      --trust-remote-code
+    env:
+      # Optional: enable experimental dense F16 fastpath (keep disabled for MoE)
+      # VLLM_SM70_ENABLE_DENSE_F16_FASTPATH: "1"
+      # Optional: enable paged prefill (experimental)
+      # VLLM_FLASH_V100_ENABLE_PAGED_PREFILL: "1"
