@@ -1168,10 +1168,15 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
 endif()
 
 # For CUDA we also build and ship some external projects.
+option(VLLM_SKIP_VLLM_FLASH_ATTN
+       "Skip building the external vllm-flash-attn project." OFF)
+
 if (VLLM_GPU_LANG STREQUAL "CUDA")
     include(cmake/external_projects/flashmla.cmake)
     include(cmake/external_projects/qutlass.cmake)
 
     # vllm-flash-attn should be last as it overwrites some CMake functions
-    include(cmake/external_projects/vllm_flash_attn.cmake)
+    if (NOT VLLM_SKIP_VLLM_FLASH_ATTN)
+        include(cmake/external_projects/vllm_flash_attn.cmake)
+    endif()
 endif ()

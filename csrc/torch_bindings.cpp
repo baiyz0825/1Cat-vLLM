@@ -332,6 +332,11 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "Tensor expert_offsets, Tensor strided_ptrs_w, Tensor strided_ptrs_s, "
       "int num_experts, int k, int n, int group_size, bool gated_silu) -> ()");
   ops.impl("awq_moe_gemm_sm70_out", torch::kCUDA, &awq_moe_gemm_sm70_out);
+  ops.def(
+      "fp8_moe_gemm_sm70_out(Tensor(a!) out, Tensor sorted_input, "
+      "Tensor expert_offsets, Tensor strided_ptrs_w, Tensor strided_ptrs_s, "
+      "int num_experts, int k, int n, int group_size, bool gated_silu) -> ()");
+  ops.impl("fp8_moe_gemm_sm70_out", torch::kCUDA, &fp8_moe_gemm_sm70_out);
 
   // Dequantization for AWQ.
   ops.def(

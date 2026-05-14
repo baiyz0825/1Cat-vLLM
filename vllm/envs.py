@@ -141,7 +141,8 @@ if TYPE_CHECKING:
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_SM70_FP8_DEQUANT_FALLBACK: bool = True
-    VLLM_SM70_FP8_TURBOMIND: bool = False
+    VLLM_SM70_FP8_TURBOMIND: bool = True
+    VLLM_ENABLE_MAMBA_PREFIX_ASYNC: bool = False
     VLLM_MXFP4_USE_MARLIN: bool | None = None
     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
@@ -1111,7 +1112,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
         int(os.getenv("VLLM_SM70_FP8_DEQUANT_FALLBACK", "1"))
     ),
     "VLLM_SM70_FP8_TURBOMIND": lambda: bool(
-        int(os.getenv("VLLM_SM70_FP8_TURBOMIND", "0"))
+        int(os.getenv("VLLM_SM70_FP8_TURBOMIND", "1"))
+    ),
+    "VLLM_ENABLE_MAMBA_PREFIX_ASYNC": lambda: bool(
+        int(os.getenv("VLLM_ENABLE_MAMBA_PREFIX_ASYNC", "0"))
     ),
     # Whether to use DeepEPLL kernels for NVFP4 quantization and dispatch method
     # only supported on Blackwell GPUs and with

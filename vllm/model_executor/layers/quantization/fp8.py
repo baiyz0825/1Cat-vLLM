@@ -49,6 +49,9 @@ from vllm.model_executor.layers.quantization.kernels.scaled_mm import (
     init_fp8_linear_kernel,
 )
 from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
+from vllm.model_executor.layers.quantization.fp8_sm70_moe import (
+    Fp8SM70MoEMethod,
+)
 from vllm.model_executor.layers.quantization.utils.flashinfer_utils import (
     apply_fi_trtllm_fp8_per_tensor_moe,
 )
@@ -233,6 +236,14 @@ class Fp8Config(QuantizationConfig):
                 fused_mapping=self.packed_modules_mapping,
             ):
                 return UnquantizedFusedMoEMethod(layer.moe_config)
+            if (
+                self.is_checkpoint_fp8_serialized
+                and current_platform.is_cuda()
+                and current_platform.has_device_capability(70)
+                and not current_platform.has_device_capability(75)
+                and envs.VLLM_SM70_FP8_TURBOMIND
+            ):
+                return Fp8SM70MoEMethod(self, layer.moe_config)
             if self.is_checkpoint_fp8_serialized:
                 moe_quant_method = Fp8MoEMethod(self, layer)
             else:
@@ -812,6 +823,14 @@ class Fp8MoEMethod(FusedMoEMethodBase):
         self.weight_scale_name = (
             "weight_scale_inv" if self.block_quant else "weight_scale"
         )
+        self.moe_mk: mk.FusedMoEModularKernel | None = None
+        self._sm70_dequant_fallback = (
+            current_platform.is_cuda()
+            and current_platform.has_device_capability(70)
+            and not current_platform.has_device_capability(75)
+            and envs.VLLM_SM70_FP8_DEQUANT_FALLBACK
+        )
+        self._fallback_unquantized_method: UnquantizedFusedMoEMethod | None = None
 
         # Set weight key and activation key for kernel compatibility
         if self.block_quant:
@@ -824,6 +843,20 @@ class Fp8MoEMethod(FusedMoEMethodBase):
                 if self.quant_config.activation_scheme == "static"
                 else kFp8DynamicTensorSym
             )
+
+        if self._sm70_dequant_fallback:
+            self.fp8_backend = None
+            self.experts_cls = None
+            self._fallback_unquantized_method = UnquantizedFusedMoEMethod(
+                layer.moe_config
+            )
+            logger.warning_once(
+                "SM70 FP8 MoE fallback enabled: FP8 MoE expert weights will "
+                "be dequantized to fp16 after loading and executed with the "
+                "unquantized Triton MoE path because V100 has no native FP8 "
+                "MoE backend."
+            )
+            return
 
         # Select Fp8 MoE backend
         self.fp8_backend, self.experts_cls = select_fp8_moe_backend(
@@ -1044,15 +1077,74 @@ class Fp8MoEMethod(FusedMoEMethodBase):
                 w13, w13_scale, shard_size, layer.local_num_experts
             )
 
+        if self._sm70_dequant_fallback:
+            assert self._fallback_unquantized_method is not None
+            if self.block_quant:
+                w13 = self._dequantize_block_moe_weight(
+                    w13, w13_scale, layer.orig_dtype
+                )
+                w2 = self._dequantize_block_moe_weight(
+                    w2, w2_scale, layer.orig_dtype
+                )
+            else:
+                w13 = self._dequantize_tensor_moe_weight(
+                    w13, w13_scale, layer.orig_dtype
+                )
+                w2 = self._dequantize_tensor_moe_weight(
+                    w2, w2_scale, layer.orig_dtype
+                )
+            replace_parameter(layer, "w13_weight", w13)
+            replace_parameter(layer, "w2_weight", w2)
+            self._fallback_unquantized_method._setup_kernel(
+                layer=layer,
+                w13=layer.w13_weight,
+                w2=layer.w2_weight,
+            )
+            layer.w13_input_scale = None
+            layer.w2_input_scale = None
+            return
+
         # Shuffle weights to runtime format and setup kernel.
         self._setup_kernel(
             layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale
         )
 
+    def _dequantize_block_moe_weight(
+        self,
+        weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        assert self.weight_block_size is not None
+        block_n, block_k = self.weight_block_size
+        scales = weight_scale.to(dtype)
+        scales = scales.repeat_interleave(block_n, dim=1)
+        scales = scales.repeat_interleave(block_k, dim=2)
+        scales = scales[:, : weight.shape[1], : weight.shape[2]]
+        return (weight.to(dtype) * scales).contiguous()
+
+    def _dequantize_tensor_moe_weight(
+        self,
+        weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        scales = weight_scale.to(dtype)
+        if scales.ndim == 2 and scales.shape[1] == 1:
+            scales = scales.squeeze(1)
+        if scales.ndim == 1:
+            scales = scales.view(-1, 1, 1)
+        return (weight.to(dtype) * scales).contiguous()
+
     def maybe_make_prepare_finalize(
         self,
         routing_tables: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
     ) -> mk.FusedMoEPrepareAndFinalize | None:
+        if self._sm70_dequant_fallback:
+            assert self._fallback_unquantized_method is not None
+            return self._fallback_unquantized_method.maybe_make_prepare_finalize(
+                routing_tables
+            )
         raise ValueError(
             f"{self.__class__.__name__} uses the new modular kernel initialization "
             "logic. This function should not be called."
@@ -1063,6 +1155,11 @@ class Fp8MoEMethod(FusedMoEMethodBase):
         prepare_finalize: FusedMoEPrepareAndFinalize,
         layer: torch.nn.Module,
     ) -> FusedMoEPermuteExpertsUnpermute:
+        if self._sm70_dequant_fallback:
+            assert self._fallback_unquantized_method is not None
+            return self._fallback_unquantized_method.select_gemm_impl(
+                prepare_finalize, layer
+            )
         raise ValueError(
             f"{self.__class__.__name__} uses the new modular kernel initialization "
             "logic. This function should not be called."
@@ -1099,6 +1196,9 @@ class Fp8MoEMethod(FusedMoEMethodBase):
 
     @property
     def is_monolithic(self) -> bool:
+        if self._sm70_dequant_fallback:
+            assert self._fallback_unquantized_method is not None
+            return self._fallback_unquantized_method.is_monolithic
         return self.fp8_backend == Fp8MoeBackend.FLASHINFER_TRTLLM
 
     def apply_monolithic(
@@ -1107,6 +1207,11 @@ class Fp8MoEMethod(FusedMoEMethodBase):
         x: torch.Tensor,
         router_logits: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if self._sm70_dequant_fallback:
+            assert self._fallback_unquantized_method is not None
+            return self._fallback_unquantized_method.forward_monolithic_cuda(
+                layer, x, router_logits
+            )
         assert self.is_monolithic
         assert self.fp8_backend == Fp8MoeBackend.FLASHINFER_TRTLLM
 
@@ -1159,6 +1264,11 @@ class Fp8MoEMethod(FusedMoEMethodBase):
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if self._sm70_dequant_fallback:
+            assert self._fallback_unquantized_method is not None
+            return self._fallback_unquantized_method.apply(
+                layer, x, topk_weights, topk_ids
+            )
         assert self.moe_mk is not None
         assert not self.is_monolithic
         return self.moe_mk(

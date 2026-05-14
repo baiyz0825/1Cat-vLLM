@@ -1025,6 +1025,32 @@ def awq_moe_gemm_sm70_out(
     )
 
 
+def fp8_moe_gemm_sm70_out(
+    out: torch.Tensor,
+    sorted_input: torch.Tensor,
+    expert_offsets: torch.Tensor,
+    strided_ptrs_w: torch.Tensor,
+    strided_ptrs_s: torch.Tensor,
+    num_experts: int,
+    k: int,
+    n: int,
+    group_size: int,
+    gated_silu: bool = False,
+) -> None:
+    torch.ops._C.fp8_moe_gemm_sm70_out(
+        out,
+        sorted_input,
+        expert_offsets,
+        strided_ptrs_w,
+        strided_ptrs_s,
+        num_experts,
+        k,
+        n,
+        group_size,
+        gated_silu,
+    )
+
+
 if hasattr(torch.ops._C, "awq_moe_gemm_sm70"):
 
     @register_fake("_C::awq_moe_gemm_sm70")
@@ -1049,6 +1075,24 @@ if hasattr(torch.ops._C, "awq_moe_gemm_sm70_out"):
 
     @register_fake("_C::awq_moe_gemm_sm70_out")
     def _awq_moe_gemm_sm70_out_fake(
+        out: torch.Tensor,
+        sorted_input: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        strided_ptrs_w: torch.Tensor,
+        strided_ptrs_s: torch.Tensor,
+        num_experts: int,
+        k: int,
+        n: int,
+        group_size: int,
+        gated_silu: bool,
+    ) -> None:
+        return None
+
+
+if hasattr(torch.ops._C, "fp8_moe_gemm_sm70_out"):
+
+    @register_fake("_C::fp8_moe_gemm_sm70_out")
+    def _fp8_moe_gemm_sm70_out_fake(
         out: torch.Tensor,
         sorted_input: torch.Tensor,
         expert_offsets: torch.Tensor,

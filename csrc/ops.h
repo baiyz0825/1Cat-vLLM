@@ -328,6 +328,17 @@ void awq_moe_gemm_sm70_out(torch::Tensor out,
                            int64_t group_size,
                            bool gated_silu);
 
+void fp8_moe_gemm_sm70_out(torch::Tensor out,
+                           torch::Tensor sorted_input,
+                           torch::Tensor expert_offsets,
+                           torch::Tensor strided_ptrs_w,
+                           torch::Tensor strided_ptrs_s,
+                           int64_t num_experts,
+                           int64_t k,
+                           int64_t n,
+                           int64_t group_size,
+                           bool gated_silu);
+
 torch::Tensor permute_cols(torch::Tensor const& A, torch::Tensor const& perm);
 #endif
 

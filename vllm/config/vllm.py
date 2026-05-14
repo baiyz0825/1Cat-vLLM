@@ -616,10 +616,22 @@ class VllmConfig:
                     "`external_launcher` distributed executor backend, but you chose "
                     f"`{executor_backend}`."
                 )
-            if self.cache_config.mamba_cache_mode != "none":
+            if (
+                self.cache_config.mamba_cache_mode != "none"
+                and not envs.VLLM_ENABLE_MAMBA_PREFIX_ASYNC
+            ):
                 raise ValueError(
                     "Currently, async scheduling is not compatible with "
                     "prefix caching for Mamba models."
+                )
+            if (
+                self.cache_config.mamba_cache_mode != "none"
+                and envs.VLLM_ENABLE_MAMBA_PREFIX_ASYNC
+            ):
+                logger.warning_once(
+                    "Experimental Mamba prefix caching + async scheduling is "
+                    "enabled. This path requires strict quality validation.",
+                    scope="local",
                 )
         elif self.scheduler_config.async_scheduling is None:
             # Enable async scheduling unless there is an incompatible option.
@@ -653,7 +665,10 @@ class VllmConfig:
                     scope="local",
                 )
                 self.scheduler_config.async_scheduling = False
-            elif self.cache_config.mamba_cache_mode != "none":
+            elif (
+                self.cache_config.mamba_cache_mode != "none"
+                and not envs.VLLM_ENABLE_MAMBA_PREFIX_ASYNC
+            ):
                 logger.warning_once(
                     "Async scheduling is not compatible with "
                     "prefix caching for Mamba models and will be disabled.",
@@ -661,6 +676,12 @@ class VllmConfig:
                 )
                 self.scheduler_config.async_scheduling = False
             else:
+                if self.cache_config.mamba_cache_mode != "none":
+                    logger.warning_once(
+                        "Experimental Mamba prefix caching + async scheduling is "
+                        "enabled. This path requires strict quality validation.",
+                        scope="local",
+                    )
                 self.scheduler_config.async_scheduling = True
 
         logger.info_once(

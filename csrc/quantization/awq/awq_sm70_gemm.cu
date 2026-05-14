@@ -2395,3 +2395,152 @@ torch::Tensor awq_moe_gemm_sm70(
                         strided_ptrs_s, num_experts, k, n, group_size, false);
   return out;
 }
+
+void fp8_moe_gemm_sm70_out(
+    torch::Tensor out,
+    torch::Tensor sorted_input,
+    torch::Tensor expert_offsets,
+    torch::Tensor strided_ptrs_w,
+    torch::Tensor strided_ptrs_s,
+    int64_t num_experts,
+    int64_t k,
+    int64_t n,
+    int64_t group_size,
+    bool gated_silu) {
+  TORCH_CHECK(sorted_input.is_cuda() && sorted_input.scalar_type() == torch::kFloat16,
+              "fp8_moe_gemm_sm70: input must be CUDA float16.");
+  TORCH_CHECK(expert_offsets.is_cuda() && expert_offsets.scalar_type() == torch::kInt32,
+              "fp8_moe_gemm_sm70: expert_offsets must be CUDA int32.");
+  TORCH_CHECK(strided_ptrs_w.is_cuda() && strided_ptrs_s.is_cuda(),
+              "fp8_moe_gemm_sm70: strided_ptrs must be CUDA.");
+  TORCH_CHECK(out.is_cuda() && out.scalar_type() == torch::kFloat16,
+              "fp8_moe_gemm_sm70: output must be CUDA float16.");
+  TORCH_CHECK(num_experts > 0 && k > 0 && n > 0,
+              "fp8_moe_gemm_sm70: invalid dimensions.");
+  TORCH_CHECK(group_size == 128,
+              "fp8_moe_gemm_sm70: only group_size=128 is supported.");
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(sorted_input));
+  const int device = sorted_input.get_device();
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  const int64_t total_tokens = sorted_input.size(0);
+  TORCH_CHECK(out.size(0) == total_tokens,
+              "fp8_moe_gemm_sm70: output rows must match input rows.");
+  TORCH_CHECK(out.stride(1) == 1,
+              "fp8_moe_gemm_sm70: output must be row-major contiguous.");
+  if (gated_silu) {
+    TORCH_CHECK((n % 2) == 0,
+                "fp8_moe_gemm_sm70: gated_silu requires even output dim.");
+    TORCH_CHECK(out.size(1) == n / 2,
+                "fp8_moe_gemm_sm70: gated_silu output cols must be n/2.");
+  } else {
+    TORCH_CHECK(out.size(1) == n,
+                "fp8_moe_gemm_sm70: output cols must match n.");
+  }
+  if (total_tokens == 0) return;
+
+  const auto converters = turbomind::gemm::GetConverters(
+      turbomind::kHalf, turbomind::kFloat8_e4m3, turbomind::kHalf, true, 70);
+  const auto* conv_w = converters[0];
+  const auto* conv_s = converters[1];
+  TORCH_CHECK(conv_w && conv_s,
+              "fp8_moe_gemm_sm70: no compatible TurboMind converters.");
+
+  turbomind::gemm::MatrixLayout desc_A{
+      turbomind::kHalf,
+      turbomind::gemm::kRowMajor,
+      static_cast<int>(total_tokens),
+      static_cast<int>(k),
+      static_cast<int>(k),
+  };
+  desc_A.num = static_cast<int>(num_experts);
+  desc_A.offsets = expert_offsets.data_ptr<int>();
+  turbomind::gemm::MatrixLayout desc_U{};
+
+  const auto order_w = conv_w->order;
+  const bool is_A_w =
+      turbomind::gemm::get_operand_tag(conv_w->pack) ==
+      turbomind::gemm::OPERAND_A;
+  const bool is_B_w = !is_A_w;
+  turbomind::gemm::MatrixLayout w_desc{
+      turbomind::kHalf,
+      order_w,
+      static_cast<int>(n),
+      static_cast<int>(k),
+      order_w == turbomind::gemm::kRowMajor ? static_cast<int>(k)
+                                            : static_cast<int>(n),
+  };
+  if (is_B_w) {
+    std::swap(w_desc.rows, w_desc.cols);
+    w_desc.order = ~w_desc.order;
+  }
+  turbomind::gemm::MatrixLayout desc_B = w_desc;
+  desc_B.type = turbomind::kFloat8_e4m3;
+  desc_B.pack = conv_w->pack;
+  if (is_A_w) {
+    desc_B = turbomind::gemm::transpose(desc_B);
+  }
+  desc_B.ld = 0;
+  desc_B.num = static_cast<int>(num_experts);
+
+  const auto order_s = conv_s->order;
+  const bool is_A_s =
+      turbomind::gemm::get_operand_tag(conv_s->pack) ==
+      turbomind::gemm::OPERAND_U;
+  const bool is_B_s = !is_A_s;
+  const int64_t num_groups = (k + group_size - 1) / group_size;
+  turbomind::gemm::MatrixLayout s_desc{
+      turbomind::kUint16,
+      order_s,
+      static_cast<int>(n),
+      static_cast<int>(num_groups),
+      static_cast<int>(n),
+  };
+  if (is_B_s) {
+    std::swap(s_desc.rows, s_desc.cols);
+    s_desc.order = ~s_desc.order;
+  }
+  turbomind::gemm::MatrixLayout desc_V = s_desc;
+  desc_V.pack = conv_s->pack;
+  if (is_A_s) {
+    desc_V = turbomind::gemm::transpose(desc_V);
+  }
+  desc_V.ld = 0;
+  desc_V.num = static_cast<int>(num_experts);
+
+  turbomind::gemm::MatrixLayout desc_D{
+      turbomind::kHalf,
+      turbomind::gemm::kRowMajor,
+      static_cast<int>(total_tokens),
+      static_cast<int>(n),
+      static_cast<int>(out.stride(0)),
+  };
+  desc_D.num = static_cast<int>(num_experts);
+  desc_D.offsets = expert_offsets.data_ptr<int>();
+
+  turbomind::gemm::Operation op{};
+  op.dispatch = vllm::awq_sm70::awq_select_moe_dispatch_policy(
+      device, static_cast<int>(total_tokens), static_cast<int>(n),
+      static_cast<int>(k), static_cast<int>(num_experts),
+      static_cast<int>(group_size), stream);
+  op.epilogue = gated_silu ? turbomind::gemm::Epilogue::kGatedSilu
+                           : turbomind::gemm::Epilogue::kNone;
+  op.quant_a = {turbomind::gemm::QuantType::kNone, 0};
+  op.quant_b = {turbomind::gemm::QuantType::kK, static_cast<int>(group_size)};
+  op.batch_dim = 0;
+
+  auto& workspace_holder = vllm::awq_sm70::get_workspace(device, stream);
+  auto& gemm = vllm::awq_sm70::get_gemm(device);
+  const int ec = gemm.Run(op, 1.f,
+      sorted_input.data_ptr(), desc_A,
+      nullptr, desc_U,
+      strided_ptrs_w.data_ptr(), desc_B,
+      strided_ptrs_s.data_ptr(), desc_V,
+      0.f,
+      out.data_ptr(), desc_D,
+      out.data_ptr(), desc_D,
+      workspace_holder.workspace, stream);
+  TORCH_CHECK(ec == 0, "fp8_moe_gemm_sm70: TurboMind batched GEMM failed (ec=",
+              ec, ").");
+}
